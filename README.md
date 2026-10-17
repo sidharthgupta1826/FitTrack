@@ -136,20 +136,54 @@ FitTrack is a modern, responsive fitness tracking web platform and Progressive W
 
 ---
 
-## 📱 Android Companion App Architecture
+## 📱 Android Companion App & Automatic Step Tracking Architecture
 
-For native Android synchronization with Google Health Connect:
+FitTrack features an official native Android companion application (`android/`) written in **Kotlin** and **Jetpack Compose (Material3)** to deliver true all-day background step tracking while keeping the web application 100% deployable on Vercel.
+
+### Dual-Channel Synchronization Architecture
+
 ```
-[Android Hardware Pedometers]
-           │
-           ▼
-[Android Health Connect (androidx.health.connect)]
-           │
-           ▼
-[FitTrack Android Companion App (Kotlin WebView)]
-           │  (window.FitTrackAndroidBridge)
-           ▼
-[FitTrack PWA (IndexedDB Storage & Analytics)]
+┌────────────────────────────────────────────────────────┐
+│               Android Operating System                 │
+├───────────────────────────┬────────────────────────────┤
+│   Google Health Connect   │  Hardware Pedometer Sensor │
+│  (Samsung Health, Google  │  (Sensor.TYPE_STEP_COUNTER)│
+│    Fit, Pixel, Garmin)    │                            │
+└─────────────┬─────────────┴──────────────┬─────────────┘
+              │ AggregateRequest           │ Midnight Baseline
+              ▼ (Deduplication)            ▼ Tracking
+┌────────────────────────────────────────────────────────┐
+│             FitTrack Android Companion App             │
+│   • HealthConnectManager                               │
+│   • StepSensorManager                                  │
+│   • Jetpack Compose UI (Progress Ring & Sync Status)   │
+│   • AndroidX WorkManager (Periodic Background Sync)    │
+│   • JavascriptInterface Bridge (WebView Companion)     │
+└──────────────┬───────────────────────────┬─────────────┘
+               │ Background HTTP Sync      │ window.FitTrackAndroidBridge
+               ▼ (OkHttp / JSON)           ▼
+┌───────────────────────────┐ ┌──────────────────────────┐
+│   FitTrack Cloud API      │ │    FitTrack Web PWA      │
+│   (/api/sync Endpoint)    │ │   (React / IndexedDB)    │
+└──────────────┬────────────┘ └──────────────────────────┘
+               │ Polling / Manual Refresh
+               ▼
+┌───────────────────────────┐
+│ FitTrack Web Application  │
+│ (Vercel / Mobile Browser) │
+└───────────────────────────┘
 ```
 
-When wrapped inside an Android WebView, FitTrack discovers `window.FitTrackAndroidBridge` and imports background step records directly.
+1. **Native Health Connect Deduplication**:
+   - Queries `AggregateRequest(setOf(StepsRecord.COUNT_TOTAL))` to automatically resolve overlapping step time intervals from smartwatches (Galaxy Watch, Pixel Watch) and phone sensors.
+2. **Hardware Step Counter Fallback (`TYPE_STEP_COUNTER`)**:
+   - Continuous pedometer sensor logging against a midnight baseline in encrypted device preferences if Health Connect is absent.
+3. **AndroidX WorkManager Periodic Background Sync**:
+   - Executes periodic background sync tasks respecting Android battery optimization and network availability constraints.
+4. **Cloud Sync API (`/api/sync`)**:
+   - Vercel Serverless Function supporting `POST` uploads from the companion app and authenticated `GET` pulls into the FitTrack web client via unique pairing tokens (`FT-xxxxxx`).
+5. **Hybrid WebView Bridge (`window.FitTrackAndroidBridge`)**:
+   - Direct high-speed JavaScript interface when the web app is embedded inside the companion app's WebView.
+
+For complete build, installation, permission configuration, and ADB testing instructions, see the [Android Companion App Guide](file:///android/README.md).
+

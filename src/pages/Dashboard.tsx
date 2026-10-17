@@ -218,15 +218,27 @@ export const Dashboard: React.FC<DashboardProps> = ({ onOpenLogModal, onOpenSync
           </div>
           {todayRecord?.source && (
             <span
-              className={`text-xs font-semibold px-2.5 py-1 rounded-full capitalize ${
-                todayRecord.source === 'demo'
-                  ? 'bg-amber-100 text-amber-800'
+              className={`text-xs font-semibold px-2.5 py-1 rounded-full ${
+                todayRecord.source === 'health_connect'
+                  ? 'bg-emerald-100 text-emerald-800'
+                  : todayRecord.source === 'sensor'
+                  ? 'bg-teal-100 text-teal-800'
                   : todayRecord.source === 'imported'
                   ? 'bg-sky-100 text-sky-800'
-                  : 'bg-emerald-100 text-emerald-800'
+                  : todayRecord.source === 'demo'
+                  ? 'bg-amber-100 text-amber-800'
+                  : 'bg-slate-100 text-slate-800'
               }`}
             >
-              {todayRecord.source} Entry
+              {todayRecord.source === 'health_connect'
+                ? 'Health Connect'
+                : todayRecord.source === 'sensor'
+                ? 'Step Sensor'
+                : todayRecord.source === 'imported'
+                ? 'File Import'
+                : todayRecord.source === 'demo'
+                ? 'Demo Preview'
+                : 'Manual Entry'}
             </span>
           )}
         </div>

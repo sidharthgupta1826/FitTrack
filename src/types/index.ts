@@ -1,6 +1,6 @@
 export type ActivityType = 'walking' | 'jogging' | 'running';
 
-export type ActivitySource = 'manual' | 'imported' | 'demo';
+export type ActivitySource = 'manual' | 'imported' | 'demo' | 'sensor' | 'health_connect';
 
 export interface DailyActivity {
   id?: number;
@@ -42,6 +42,8 @@ export interface UserProfile {
   themePreference: 'light' | 'dark' | 'system';
   isAndroidCompanionSynced: boolean;
   lastSyncTime?: string;
+  syncToken?: string;
+  syncServerUrl?: string;
 }
 
 export interface Achievement {
@@ -56,11 +58,23 @@ export interface Achievement {
   unlockedAt?: string;
 }
 
+export type SyncProvider =
+  | 'health_connect'
+  | 'sensor'
+  | 'android_companion'
+  | 'samsung_health'
+  | 'manual'
+  | 'file_import';
+
 export interface SyncStatus {
   isConnected: boolean;
   lastSyncTime?: string;
-  provider: 'health_connect' | 'samsung_health' | 'manual' | 'file_import';
+  provider: SyncProvider;
   statusMessage: string;
+  syncToken?: string;
+  syncServerUrl?: string;
+  deviceId?: string;
+  isNativeBridgeActive?: boolean;
 }
 
 export interface DayStepSummary {

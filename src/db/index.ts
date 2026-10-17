@@ -1,5 +1,5 @@
 import Dexie, { Table } from 'dexie';
-import { DailyActivity, Workout, UserGoals, UserProfile } from '../types';
+import { DailyActivity, Workout, UserGoals, UserProfile, ActivitySource } from '../types';
 import { stepsToKm, stepsToCalories, stepsToActiveMinutes, toDateString } from '../utils/calculations';
 
 export class FitTrackDatabase extends Dexie {
@@ -34,6 +34,7 @@ export const DEFAULT_PROFILE: UserProfile = {
   themePreference: 'light',
   isAndroidCompanionSynced: false,
   lastSyncTime: undefined,
+  syncToken: 'FT-7492A1',
 };
 
 /**
@@ -168,7 +169,7 @@ export async function resetAllData(): Promise<void> {
 export async function upsertDailyActivity(record: {
   date: string;
   steps: number;
-  source: 'manual' | 'imported' | 'demo';
+  source: ActivitySource;
   distanceKm?: number;
   calories?: number;
   activeMinutes?: number;

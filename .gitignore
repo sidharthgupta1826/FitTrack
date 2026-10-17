@@ -22,6 +22,15 @@ vite.config.js
 .DS_Store
 *.suo
 *.ntvs*
-*.njsproj
-*.sln
 *.sw?
+
+# Android build files
+android/.gradle/
+android/build/
+android/*/build/
+android/*.iml
+android/*/*.iml
+android/local.properties
+android/.idea/
+*.apk
+*.aab

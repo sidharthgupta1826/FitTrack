@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">FitTrack Companion</string>
+    <string name="health_connect_rationale">FitTrack requires Health Connect permission to read aggregated step counts without double-counting across your fitness devices.</string>
+</resources>

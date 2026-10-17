@@ -1,6 +1,7 @@
 import { db, upsertDailyActivity } from '../db';
-import { SyncStatus } from '../types';
+import { SyncStatus, ActivitySource } from '../types';
 import { stepsToCalories, stepsToKm, toDateString } from '../utils/calculations';
+import { fetchRemoteSyncData, getEffectiveSyncServerUrl } from './syncApi';
 
 const SYNC_STATUS_KEY = 'fittrack_health_sync_status';
 
@@ -8,7 +9,9 @@ export interface HealthConnectSyncResult {
   success: boolean;
   importedRecordsCount: number;
   message: string;
-  source: 'health_connect' | 'samsung_health' | 'file_import';
+  source: ActivitySource;
+  deviceModel?: string;
+  isNativeBridge?: boolean;
 }
 
 /**
@@ -24,10 +27,16 @@ export function getStoredSyncStatus(): SyncStatus {
     // Ignore parse error
   }
 
+  // Check if loaded inside native companion webview
+  const hasBridge = typeof window !== 'undefined' && typeof (window as any).FitTrackAndroidBridge !== 'undefined';
+
   return {
-    isConnected: false,
-    provider: 'health_connect',
-    statusMessage: 'Ready to connect with Android Health Connect or Samsung Health.',
+    isConnected: hasBridge,
+    provider: hasBridge ? 'android_companion' : 'manual',
+    statusMessage: hasBridge
+      ? 'Connected directly to Native Android Companion Bridge.'
+      : 'Manual fallback active. Connect Android Companion App for automatic tracking.',
+    isNativeBridgeActive: hasBridge,
   };
 }
 
@@ -39,93 +48,119 @@ export function saveSyncStatus(status: SyncStatus) {
 }
 
 /**
- * Simulate or perform synchronization with Android Health Connect
- * Transparently explains what is happening.
+ * Synchronize with Android Health Connect or Native Step Sensor
+ * Checks native bridge first, then remote companion API endpoint.
+ * Never fabricates synthetic values.
  */
-export async function performHealthConnectSync(): Promise<HealthConnectSyncResult> {
-  // Check if browser has a registered Android WebView JavaScript interface
-  // (e.g. window.FitTrackAndroidBridge or HealthConnectNativeBridge)
-  const hasNativeBridge = typeof (window as any).FitTrackAndroidBridge !== 'undefined';
+export async function performHealthConnectSync(options?: {
+  syncToken?: string;
+  syncServerUrl?: string;
+}): Promise<HealthConnectSyncResult> {
+  const hasNativeBridge =
+    typeof window !== 'undefined' && typeof (window as any).FitTrackAndroidBridge !== 'undefined';
 
+  // 1. Direct in-app native companion bridge (WebView JavaScriptInterface)
   if (hasNativeBridge) {
     try {
       const nativeBridge = (window as any).FitTrackAndroidBridge;
       const rawData = await nativeBridge.fetchHealthConnectSteps();
-      const records = JSON.parse(rawData);
+      const records = typeof rawData === 'string' ? JSON.parse(rawData) : rawData;
+
+      if (!Array.isArray(records) || records.length === 0) {
+        return {
+          success: false,
+          importedRecordsCount: 0,
+          message: 'Native bridge connected, but no step records were returned from Health Connect or sensor. Verify permissions in the companion app.',
+          source: 'health_connect',
+          isNativeBridge: true,
+        };
+      }
 
       let importedCount = 0;
       for (const rec of records) {
-        await upsertDailyActivity({
-          date: rec.date,
-          steps: rec.steps,
-          source: 'imported',
-          distanceKm: rec.distanceKm,
-          calories: rec.calories,
-          activeMinutes: rec.activeMinutes,
-        });
-        importedCount++;
+        const steps = Number(rec.steps) || 0;
+        if (steps > 0 && rec.date) {
+          const source = (rec.source === 'sensor' ? 'sensor' : 'health_connect') as ActivitySource;
+          await upsertDailyActivity({
+            date: rec.date,
+            steps,
+            source,
+            distanceKm: rec.distanceKm || stepsToKm(steps),
+            calories: rec.calories || stepsToCalories(steps),
+            activeMinutes: rec.activeMinutes,
+          });
+          importedCount++;
+        }
       }
 
       const syncStatus: SyncStatus = {
         isConnected: true,
         lastSyncTime: new Date().toISOString(),
-        provider: 'health_connect',
-        statusMessage: `Synchronized ${importedCount} records via Native Android Health Connect bridge.`,
+        provider: 'android_companion',
+        statusMessage: `Synchronized ${importedCount} records via Native Android Bridge.`,
+        isNativeBridgeActive: true,
       };
       saveSyncStatus(syncStatus);
 
       return {
         success: true,
         importedRecordsCount: importedCount,
-        message: `Successfully synchronized ${importedCount} daily records from Android Health Connect.`,
+        message: `Successfully synchronized ${importedCount} records from Android Companion.`,
         source: 'health_connect',
+        isNativeBridge: true,
       };
     } catch (e: any) {
       return {
         success: false,
         importedRecordsCount: 0,
-        message: `Native bridge sync error: ${e.message}`,
+        message: `Native bridge communication error: ${e.message}`,
         source: 'health_connect',
+        isNativeBridge: true,
       };
     }
   }
 
-  // Standard Web Browser environment:
-  // Simulate realistic sync for demonstration with explicit honesty
-  await new Promise((resolve) => setTimeout(resolve, 1500));
+  // 2. Remote synchronization API (when running in standard web browser)
+  const token = options?.syncToken || 'FT-7492A1';
+  const remoteResult = await fetchRemoteSyncData(token, options?.syncServerUrl);
 
-  const today = new Date();
-  const simulatedRecords = [
-    {
-      date: toDateString(today),
-      steps: Math.floor(7500 + Math.random() * 3200),
-      source: 'imported' as const,
-    },
-  ];
+  if (remoteResult.success && remoteResult.importedCount > 0) {
+    const syncStatus: SyncStatus = {
+      isConnected: true,
+      lastSyncTime: remoteResult.lastSyncTime || new Date().toISOString(),
+      provider: remoteResult.source === 'sensor' ? 'sensor' : 'health_connect',
+      statusMessage: `Synchronized via FitTrack API (${remoteResult.deviceModel || 'Android App'}).`,
+      syncToken: token,
+      isNativeBridgeActive: false,
+    };
+    saveSyncStatus(syncStatus);
 
-  for (const rec of simulatedRecords) {
-    await upsertDailyActivity({
-      date: rec.date,
-      steps: rec.steps,
-      source: 'imported',
-      distanceKm: stepsToKm(rec.steps),
-      calories: stepsToCalories(rec.steps),
-    });
+    return {
+      success: true,
+      importedRecordsCount: remoteResult.importedCount,
+      message: remoteResult.message,
+      source: remoteResult.source || 'health_connect',
+      deviceModel: remoteResult.deviceModel,
+      isNativeBridge: false,
+    };
   }
 
+  // 3. Honest fallback when no bridge and no pending API data
   const syncStatus: SyncStatus = {
-    isConnected: true,
-    lastSyncTime: new Date().toISOString(),
-    provider: 'health_connect',
-    statusMessage: 'Simulated Health Connect sync active (demo connector).',
+    isConnected: false,
+    provider: 'manual',
+    statusMessage: 'No companion connection. Manual entry active as fallback.',
+    syncToken: token,
+    isNativeBridgeActive: false,
   };
   saveSyncStatus(syncStatus);
 
   return {
-    success: true,
-    importedRecordsCount: simulatedRecords.length,
-    message: `Synchronized ${simulatedRecords[0].steps.toLocaleString()} steps for today from Android Health Connect connector.`,
-    source: 'health_connect',
+    success: false,
+    importedRecordsCount: 0,
+    message: remoteResult.message || 'No records received from Android Companion app. Ensure the companion app is running and synced.',
+    source: 'manual',
+    isNativeBridge: false,
   };
 }
 
@@ -135,8 +170,8 @@ export async function performHealthConnectSync(): Promise<HealthConnectSyncResul
 export function disconnectHealthPlatform(): SyncStatus {
   const status: SyncStatus = {
     isConnected: false,
-    provider: 'health_connect',
-    statusMessage: 'Health platform disconnected.',
+    provider: 'manual',
+    statusMessage: 'Android companion synchronization disconnected. Manual fallback active.',
     lastSyncTime: undefined,
   };
   saveSyncStatus(status);
@@ -177,7 +212,6 @@ export async function importHealthDataFromFile(
     } else {
       // Parse CSV format (date, steps, ...)
       const lines = content.split(/\r?\n/).filter((l) => l.trim().length > 0);
-      // Skip header if first line has letters
       const startIndex = lines[0].toLowerCase().includes('step') || lines[0].toLowerCase().includes('date') ? 1 : 0;
 
       for (let i = startIndex; i < lines.length; i++) {
@@ -185,7 +219,6 @@ export async function importHealthDataFromFile(
         if (parts.length >= 2) {
           const date = parts[0];
           const steps = parseInt(parts[1], 10);
-          // Check standard YYYY-MM-DD
           if (/^\d{4}-\d{2}-\d{2}$/.test(date) && !isNaN(steps) && steps >= 0) {
             await upsertDailyActivity({
               date,
@@ -205,7 +238,7 @@ export async function importHealthDataFromFile(
         success: false,
         importedRecordsCount: 0,
         message: 'No valid step records found in file. Format expected: "YYYY-MM-DD,steps" or JSON format.',
-        source: 'file_import',
+        source: 'imported',
       };
     }
 
@@ -221,47 +254,40 @@ export async function importHealthDataFromFile(
       success: true,
       importedRecordsCount: importedCount,
       message: `Successfully imported ${importedCount} activity records from ${fileName}!`,
-      source: 'file_import',
+      source: 'imported',
     };
   } catch (err: any) {
     return {
       success: false,
       importedRecordsCount: 0,
       message: `File parsing error: ${err.message || 'Check file format'}`,
-      source: 'file_import',
+      source: 'imported',
     };
   }
 }
 
 /**
- * Kotlin Android Companion App Integration Blueprint (Specification)
+ * Android Companion Architecture documentation snippet
  */
 export const ANDROID_COMPANION_SPEC = `
 // ========================================================
 // FitTrack Android Companion App Bridge Spec (Kotlin)
-// Using Google Health Connect API (androidx.health.connect:connect-client:1.1.0-alpha11)
+// Using Google Health Connect Aggregation to Avoid Double-Counting
 // ========================================================
 
-class FitTrackAndroidBridge(private val context: Context, private val webView: WebView) {
+class HealthConnectManager(private val context: Context) {
     private val healthConnectClient by lazy { HealthConnectClient.getOrCreate(context) }
 
-    @JavascriptInterface
-    fun fetchHealthConnectSteps(): String {
-        val permissions = setOf(
-            HealthPermission.getReadPermission(StepsRecord::class),
-            HealthPermission.getReadPermission(DistanceRecord::class),
-            HealthPermission.getReadPermission(TotalCaloriesBurnedRecord::class)
+    suspend fun getAggregatedDailySteps(startTime: Instant, endTime: Instant): Long {
+        // Use Health Connect AGGREGATION to avoid double-counting steps
+        // from multiple fitness applications or wearable devices.
+        val response = healthConnectClient.aggregate(
+            AggregateRequest(
+                metrics = setOf(StepsRecord.COUNT_TOTAL),
+                timeRangeFilter = TimeRangeFilter.between(startTime, endTime)
+            )
         )
-        // Read aggregated daily steps for the last 14 days
-        val startTime = Instant.now().minus(14, ChronoUnit.DAYS)
-        val endTime = Instant.now()
-        
-        val request = ReadRecordsRequest(
-            recordType = StepsRecord::class,
-            timeRangeFilter = TimeRangeFilter.between(startTime, endTime)
-        )
-        // Returns JSON serialized step records to FitTrack Web PWA
-        return "[{\\"date\\": \\"2026-10-11\\", \\"steps\\": 8450, \\"distanceKm\\": 6.4}]"
+        return response[StepsRecord.COUNT_TOTAL] ?: 0L
     }
 }
 `;

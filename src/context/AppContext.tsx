@@ -1,7 +1,11 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { UserGoals, UserProfile, SyncStatus } from '../types';
 import { db, DEFAULT_GOALS, DEFAULT_PROFILE, hasDemoData, clearDemoData } from '../db';
-import { getStoredSyncStatus } from '../services/healthConnect';
+import {
+  getStoredSyncStatus,
+  performHealthConnectSync,
+  HealthConnectSyncResult,
+} from '../services/healthConnect';
 
 export type TabType = 'dashboard' | 'activity' | 'workouts' | 'insights' | 'goals' | 'profile';
 
@@ -16,6 +20,7 @@ interface AppContextType {
   handleClearDemo: () => Promise<void>;
   updateGoals: (newGoals: Partial<UserGoals>) => Promise<void>;
   updateProfile: (newProfile: Partial<UserProfile>) => Promise<void>;
+  triggerSync: () => Promise<HealthConnectSyncResult>;
   refreshAll: () => Promise<void>;
   toast: { message: string; type?: 'success' | 'info' | 'error' } | null;
   showToast: (message: string, type?: 'success' | 'info' | 'error') => void;
@@ -88,7 +93,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (g) setGoals(g);
 
       const p = await db.profile.toCollection().first();
-      if (p) setProfile(p);
+      if (p) {
+        if (!p.syncToken) {
+          p.syncToken = 'FT-7492A1';
+          if (p.id) await db.profile.update(p.id, { syncToken: 'FT-7492A1' });
+        }
+        setProfile(p);
+      }
 
       const demoActive = await hasDemoData();
       setHasDemo(demoActive);
@@ -138,6 +149,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     showToast('Profile preferences saved!');
   };
 
+  const triggerSync = async (): Promise<HealthConnectSyncResult> => {
+    const result = await performHealthConnectSync({
+      syncToken: profile.syncToken || 'FT-7492A1',
+      syncServerUrl: profile.syncServerUrl,
+    });
+    setSyncStatus(getStoredSyncStatus());
+    if (result.success) {
+      showToast(result.message, 'success');
+      await loadData();
+    } else {
+      showToast(result.message, result.isNativeBridge ? 'error' : 'info');
+    }
+    return result;
+  };
+
   const refreshAll = async () => {
     await loadData();
   };
@@ -155,6 +181,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         handleClearDemo,
         updateGoals,
         updateProfile,
+        triggerSync,
         refreshAll,
         toast,
         showToast,

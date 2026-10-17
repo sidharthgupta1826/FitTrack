@@ -13,10 +13,10 @@ import {
   stepsToActiveMinutes,
 } from '../utils/calculations';
 import {
-  performHealthConnectSync,
   importHealthDataFromFile,
   ANDROID_COMPANION_SPEC,
 } from '../services/healthConnect';
+import { getEffectiveSyncServerUrl } from '../services/syncApi';
 import { ProgressRing } from '../components/ProgressRing';
 import { Modal } from '../components/Modal';
 import {
@@ -34,6 +34,10 @@ import {
   Flame,
   Info,
   Trash2,
+  Copy,
+  Cpu,
+  HeartPulse,
+  RefreshCw,
 } from 'lucide-react';
 
 interface ActivityProps {
@@ -41,7 +45,7 @@ interface ActivityProps {
 }
 
 export const Activity: React.FC<ActivityProps> = ({ onOpenLogModal }) => {
-  const { goals, profile, syncStatus, showToast, refreshAll } = useApp();
+  const { goals, profile, syncStatus, triggerSync, showToast, refreshAll } = useApp();
 
   const [selectedDate, setSelectedDate] = useState<string>(getTodayString());
   const [isSyncing, setIsSyncing] = useState(false);
@@ -68,26 +72,23 @@ export const Activity: React.FC<ActivityProps> = ({ onOpenLogModal }) => {
     selectedRecord?.activeMinutes || stepsToActiveMinutes(selectedSteps);
   const goalPercentage = Math.round((selectedSteps / goals.dailyStepGoal) * 100);
 
-  // Navigate to previous day
+  // Navigation helpers
   const handlePrevDay = () => {
     const d = new Date(selectedDate);
     d.setDate(d.getDate() - 1);
     setSelectedDate(d.toISOString().split('T')[0]);
   };
 
-  // Navigate to next day
   const handleNextDay = () => {
     const d = new Date(selectedDate);
     d.setDate(d.getDate() + 1);
     setSelectedDate(d.toISOString().split('T')[0]);
   };
 
-  // Quick Today jump
   const handleJumpToToday = () => {
     setSelectedDate(getTodayString());
   };
 
-  // Delete an entry
   const handleDeleteEntry = async (id?: number) => {
     if (!id) return;
     if (window.confirm('Are you sure you want to delete this step entry?')) {
@@ -97,25 +98,22 @@ export const Activity: React.FC<ActivityProps> = ({ onOpenLogModal }) => {
     }
   };
 
-  // Handle Health Connect Sync
   const handleHealthSync = async () => {
     setIsSyncing(true);
     try {
-      const result = await performHealthConnectSync();
-      if (result.success) {
-        showToast(result.message, 'success');
-        await refreshAll();
-      } else {
-        showToast(result.message, 'error');
-      }
-    } catch (e: any) {
-      showToast(`Sync error: ${e.message}`, 'error');
+      await triggerSync();
     } finally {
       setIsSyncing(false);
     }
   };
 
-  // Handle CSV/JSON File Import
+  const handleCopyText = (text: string, label: string) => {
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(text);
+      showToast(`${label} copied to clipboard!`, 'success');
+    }
+  };
+
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -139,8 +137,47 @@ export const Activity: React.FC<ActivityProps> = ({ onOpenLogModal }) => {
       showToast('Error reading file.', 'error');
     };
     reader.readAsText(file);
-    // Reset input
     e.target.value = '';
+  };
+
+  const currentSyncUrl = getEffectiveSyncServerUrl(profile.syncServerUrl);
+  const currentSyncToken = profile.syncToken || 'FT-7492A1';
+
+  const renderSourceBadge = (source?: string) => {
+    switch (source) {
+      case 'health_connect':
+        return (
+          <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
+            <HeartPulse className="w-3 h-3 text-emerald-600" />
+            Health Connect
+          </span>
+        );
+      case 'sensor':
+        return (
+          <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-teal-100 text-teal-800">
+            <Cpu className="w-3 h-3 text-teal-600" />
+            Step Sensor
+          </span>
+        );
+      case 'imported':
+        return (
+          <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-sky-100 text-sky-800">
+            File Import
+          </span>
+        );
+      case 'demo':
+        return (
+          <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800">
+            Demo Sample
+          </span>
+        );
+      default:
+        return (
+          <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-800">
+            Manual Entry
+          </span>
+        );
+    }
   };
 
   return (
@@ -152,7 +189,7 @@ export const Activity: React.FC<ActivityProps> = ({ onOpenLogModal }) => {
             Daily Step Tracking
           </h1>
           <p className="text-sm font-medium text-slate-500 mt-1">
-            Log, correct, and review your daily physical activity records.
+            Automatic Android synchronization, manual entries, and historical step logs.
           </p>
         </div>
 
@@ -161,7 +198,7 @@ export const Activity: React.FC<ActivityProps> = ({ onOpenLogModal }) => {
           className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-2xl bg-emerald-600 text-white text-xs font-bold hover:bg-emerald-700 shadow-md shadow-emerald-600/20 active:scale-95 transition-all self-start sm:self-auto"
         >
           <Plus className="w-4 h-4" />
-          <span>Record Daily Steps</span>
+          <span>Manual Step Entry</span>
         </button>
       </div>
 
@@ -233,7 +270,7 @@ export const Activity: React.FC<ActivityProps> = ({ onOpenLogModal }) => {
               sublabel={
                 selectedRecord
                   ? `${goalPercentage}% of goal`
-                  : 'No entry for this date'
+                  : 'No steps recorded'
               }
             />
           </div>
@@ -241,21 +278,9 @@ export const Activity: React.FC<ActivityProps> = ({ onOpenLogModal }) => {
           <div className="md:col-span-7 space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="text-base font-bold text-navy-900">
-                {selectedRecord ? 'Activity Breakdown' : 'No Activity Logged Yet'}
+                {selectedRecord ? 'Activity Summary' : 'No Activity Recorded Yet'}
               </h3>
-              {selectedRecord && (
-                <span
-                  className={`text-xs font-semibold px-2.5 py-0.5 rounded-full capitalize ${
-                    selectedRecord.source === 'demo'
-                      ? 'bg-amber-100 text-amber-800'
-                      : selectedRecord.source === 'imported'
-                      ? 'bg-sky-100 text-sky-800'
-                      : 'bg-emerald-100 text-emerald-800'
-                  }`}
-                >
-                  Source: {selectedRecord.source}
-                </span>
-              )}
+              {selectedRecord && renderSourceBadge(selectedRecord.source)}
             </div>
 
             <div className="grid grid-cols-3 gap-3">
@@ -294,7 +319,7 @@ export const Activity: React.FC<ActivityProps> = ({ onOpenLogModal }) => {
             {!selectedRecord ? (
               <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200 text-center">
                 <p className="text-xs text-slate-600">
-                  Ready to record your steps for {formatShortDate(selectedDate)}?
+                  Ready to record steps for {formatShortDate(selectedDate)}?
                 </p>
                 <button
                   onClick={() => onOpenLogModal(selectedDate)}
@@ -312,24 +337,34 @@ export const Activity: React.FC<ActivityProps> = ({ onOpenLogModal }) => {
         </div>
       </div>
 
-      {/* Android Health Connect Integration Card */}
-      <div className="bg-white rounded-3xl p-6 sm:p-8 border border-slate-100 shadow-card">
-        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 mb-6">
-          <div className="flex items-start gap-3">
+      {/* Android Health Connect & Native Step Sensor Integration Hub */}
+      <div className="bg-white rounded-3xl p-6 sm:p-8 border border-slate-100 shadow-card space-y-6">
+        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
+          <div className="flex items-start gap-3.5">
             <div className="p-3 rounded-2xl bg-emerald-50 text-emerald-700 shrink-0">
               <Smartphone className="w-6 h-6" />
             </div>
             <div>
               <div className="flex items-center gap-2">
                 <h3 className="text-lg font-bold text-navy-900">
-                  Android Health Connect Connector
+                  Android Automatic Step Tracking Hub
                 </h3>
-                <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
-                  Ready
-                </span>
+                {syncStatus.isNativeBridgeActive ? (
+                  <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
+                    Native Bridge Connected
+                  </span>
+                ) : syncStatus.isConnected ? (
+                  <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-sky-100 text-sky-800">
+                    Cloud Synced
+                  </span>
+                ) : (
+                  <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-slate-100 text-slate-700">
+                    Manual Fallback Active
+                  </span>
+                )}
               </div>
               <p className="text-xs text-slate-500 mt-1 max-w-xl">
-                Web browsers cannot continuously access phone hardware pedometers directly in the background. FitTrack provides a clean connector architecture: sync via our companion bridge, import health platform exports, or log steps manually.
+                FitTrack pairs with our native Android Companion App using <strong>Google Health Connect</strong> (aggregated daily steps with deduplication) and device hardware sensors (<code>TYPE_STEP_COUNTER</code>).
               </p>
             </div>
           </div>
@@ -340,48 +375,94 @@ export const Activity: React.FC<ActivityProps> = ({ onOpenLogModal }) => {
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
             >
               <FileCode className="w-3.5 h-3.5 text-slate-500" />
-              <span>Bridge Spec</span>
+              <span>Companion Spec</span>
             </button>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-4 border-t border-slate-100">
-          {/* Connector 1: Simulated / Native Health Connect Sync */}
+        {/* Pairing Tokens & Credentials Box */}
+        <div className="p-5 rounded-2xl bg-slate-50 border border-slate-200/80 grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="space-y-1">
+            <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+              Your Companion Pairing Token
+            </span>
+            <div className="flex items-center gap-2">
+              <span className="text-xl font-extrabold text-navy-900 font-mono tracking-wider">
+                {currentSyncToken}
+              </span>
+              <button
+                onClick={() => handleCopyText(currentSyncToken, 'Pairing Token')}
+                className="p-1 rounded-lg hover:bg-slate-200 text-slate-500 hover:text-navy-900 transition-colors"
+                title="Copy Pairing Token"
+              >
+                <Copy className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-[11px] text-slate-400">
+              Enter this pairing token into the FitTrack Android Companion App settings.
+            </p>
+          </div>
+
+          <div className="space-y-1">
+            <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+              Sync Endpoint URL
+            </span>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold text-navy-900 font-mono truncate max-w-xs">
+                {currentSyncUrl}
+              </span>
+              <button
+                onClick={() => handleCopyText(currentSyncUrl, 'Sync Server URL')}
+                className="p-1 rounded-lg hover:bg-slate-200 text-slate-500 hover:text-navy-900 transition-colors shrink-0"
+                title="Copy Server URL"
+              >
+                <Copy className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-[11px] text-slate-400">
+              Default server endpoint for automatic cloud background synchronization.
+            </p>
+          </div>
+        </div>
+
+        {/* Action Connectors Grid */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2">
+          {/* Connector 1: Synchronize Now */}
           <div className="p-4 rounded-2xl bg-slate-50 border border-slate-100 flex flex-col justify-between">
             <div>
-              <span className="text-xs font-bold text-navy-900">Health Connect Sync</span>
+              <span className="text-xs font-bold text-navy-900">Sync with Companion</span>
               <p className="text-[11px] text-slate-500 mt-1">
-                Reads daily step aggregates via Android Health Connect API.
+                Fetches latest steps from Health Connect and hardware sensor via bridge or API.
               </p>
             </div>
             <button
               onClick={handleHealthSync}
               disabled={isSyncing}
-              className="mt-4 w-full py-2 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-all flex items-center justify-center gap-1.5 shadow-sm"
+              className="mt-4 w-full py-2 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-all flex items-center justify-center gap-1.5 shadow-sm active:scale-95"
             >
               {isSyncing ? (
                 <>
-                  <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  <span>Syncing...</span>
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  <span>Checking Sync...</span>
                 </>
               ) : (
                 <>
                   <Smartphone className="w-3.5 h-3.5" />
-                  <span>Sync Steps Now</span>
+                  <span>Sync Now</span>
                 </>
               )}
             </button>
           </div>
 
-          {/* Connector 2: Import Samsung / Google Fit CSV & JSON */}
+          {/* Connector 2: Import Health Export File */}
           <div className="p-4 rounded-2xl bg-slate-50 border border-slate-100 flex flex-col justify-between">
             <div>
-              <span className="text-xs font-bold text-navy-900">File Import</span>
+              <span className="text-xs font-bold text-navy-900">File Import Fallback</span>
               <p className="text-[11px] text-slate-500 mt-1">
-                Import exported activity files (CSV or JSON format).
+                Upload CSV or JSON exports from Samsung Health, Google Takeout, or Health Connect.
               </p>
             </div>
-            <label className="mt-4 w-full py-2 px-3 rounded-xl bg-white border border-slate-200 hover:border-emerald-300 text-navy-900 text-xs font-bold transition-all flex items-center justify-center gap-1.5 shadow-xs cursor-pointer">
+            <label className="mt-4 w-full py-2 px-3 rounded-xl bg-white border border-slate-200 hover:border-emerald-300 text-navy-900 text-xs font-bold transition-all flex items-center justify-center gap-1.5 shadow-xs cursor-pointer active:scale-95">
               <UploadCloud className="w-3.5 h-3.5 text-emerald-600" />
               <span>{isUploading ? 'Importing...' : 'Upload File'}</span>
               <input
@@ -393,18 +474,26 @@ export const Activity: React.FC<ActivityProps> = ({ onOpenLogModal }) => {
             </label>
           </div>
 
-          {/* Connector 3: Connection Status */}
+          {/* Connector 3: Connection Status Details */}
           <div className="p-4 rounded-2xl bg-slate-50 border border-slate-100 flex flex-col justify-between">
             <div>
-              <span className="text-xs font-bold text-navy-900">Connection Status</span>
+              <span className="text-xs font-bold text-navy-900">Connection Health</span>
               <div className="flex items-center gap-1.5 mt-2">
                 <span
                   className={`w-2 h-2 rounded-full ${
-                    syncStatus.isConnected ? 'bg-emerald-500' : 'bg-slate-400'
+                    syncStatus.isNativeBridgeActive
+                      ? 'bg-emerald-500'
+                      : syncStatus.isConnected
+                      ? 'bg-sky-500'
+                      : 'bg-slate-400'
                   }`}
                 />
-                <span className="text-xs font-bold text-navy-900">
-                  {syncStatus.isConnected ? 'Connected' : 'Standby'}
+                <span className="text-xs font-bold text-navy-900 capitalize">
+                  {syncStatus.isNativeBridgeActive
+                    ? 'In-App Native Bridge'
+                    : syncStatus.isConnected
+                    ? 'REST API Connected'
+                    : 'Manual Fallback'}
                 </span>
               </div>
               <p className="text-[11px] text-slate-500 mt-1">
@@ -413,9 +502,12 @@ export const Activity: React.FC<ActivityProps> = ({ onOpenLogModal }) => {
                       hour: '2-digit',
                       minute: '2-digit',
                     })}`
-                  : 'Manual fallback active'}
+                  : 'Awaiting companion sync'}
               </p>
             </div>
+            <p className="text-[10px] text-slate-400 mt-2">
+              Status: {syncStatus.statusMessage}
+            </p>
           </div>
         </div>
       </div>
@@ -426,7 +518,7 @@ export const Activity: React.FC<ActivityProps> = ({ onOpenLogModal }) => {
           <div>
             <h3 className="text-lg font-bold text-navy-900">Activity History</h3>
             <p className="text-xs text-slate-500">
-              {sortedActivities.length} days recorded
+              {sortedActivities.length} days recorded in local IndexedDB
             </p>
           </div>
         </div>
@@ -440,7 +532,7 @@ export const Activity: React.FC<ActivityProps> = ({ onOpenLogModal }) => {
                 <th className="py-3 px-3">Goal Progress</th>
                 <th className="py-3 px-3">Distance</th>
                 <th className="py-3 px-3">Calories</th>
-                <th className="py-3 px-3">Source</th>
+                <th className="py-3 px-3">Source Tag</th>
                 <th className="py-3 px-3 text-right">Actions</th>
               </tr>
             </thead>
@@ -475,17 +567,7 @@ export const Activity: React.FC<ActivityProps> = ({ onOpenLogModal }) => {
                       {formatNumber(act.calories)} kcal
                     </td>
                     <td className="py-3 px-3">
-                      <span
-                        className={`text-[10px] font-bold px-2 py-0.5 rounded-full capitalize ${
-                          act.source === 'demo'
-                            ? 'bg-amber-100 text-amber-800'
-                            : act.source === 'imported'
-                            ? 'bg-sky-100 text-sky-800'
-                            : 'bg-emerald-100 text-emerald-800'
-                        }`}
-                      >
-                        {act.source}
-                      </span>
+                      {renderSourceBadge(act.source)}
                     </td>
                     <td className="py-3 px-3 text-right">
                       <div className="flex items-center justify-end gap-1">
@@ -517,19 +599,19 @@ export const Activity: React.FC<ActivityProps> = ({ onOpenLogModal }) => {
       <Modal
         isOpen={showSpecModal}
         onClose={() => setShowSpecModal(false)}
-        title="Android Companion App Bridge Specification"
+        title="Android Companion Architecture Specification"
         maxWidth="lg"
       >
         <div className="space-y-4 text-xs text-slate-600">
           <p>
-            To automatically sync background steps without user intervention on Android smartphones, a lightweight native companion service or Android Health Connect integration bridge is used.
+            The FitTrack Android Companion App runs on Android 8.0+ devices, accessing Google Health Connect and the hardware pedometer sensor:
           </p>
           <div className="p-3.5 rounded-2xl bg-slate-900 text-slate-100 font-mono text-[11px] overflow-x-auto">
             <pre>{ANDROID_COMPANION_SPEC.trim()}</pre>
           </div>
-          <p className="text-[11px] text-slate-500">
-            When wrapped inside an Android WebView or Custom Tab, FitTrack automatically discovers <code className="bg-slate-100 px-1 py-0.5 rounded text-navy-900">window.FitTrackAndroidBridge</code> and reads hardware step data directly.
-          </p>
+          <div className="p-3 bg-emerald-50 rounded-xl text-emerald-900 text-xs">
+            <strong>Key Benefit:</strong> Health Connect aggregation prevents double-counting by deduplicating overlapping step counts from wearables and phones.
+          </div>
           <div className="flex justify-end pt-2">
             <button
               onClick={() => setShowSpecModal(false)}

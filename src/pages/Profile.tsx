@@ -175,6 +175,18 @@ export const Profile: React.FC = () => {
             </div>
           </div>
 
+          <div className="space-y-1.5 pt-2 border-t border-slate-100">
+            <label className="text-xs font-bold text-navy-900 flex items-center justify-between">
+              <span>Android Companion Pairing Token</span>
+              <span className="text-[11px] font-mono text-emerald-700 font-extrabold bg-emerald-50 px-2 py-0.5 rounded">
+                {profile.syncToken || 'FT-7492A1'}
+              </span>
+            </label>
+            <p className="text-[11px] text-slate-500">
+              Provide this key to the FitTrack Android Companion App to authenticate background step transfers.
+            </p>
+          </div>
+
           <div className="pt-2">
             <button
               type="submit"
